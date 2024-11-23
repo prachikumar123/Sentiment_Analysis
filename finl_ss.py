@@ -7,105 +7,87 @@ Original file is located at
     https://colab.research.google.com/drive/1lQ61Ci1lVIJkqNK859w8qpfy9D_gYIO_
 """
 
-# Import necessary libraries
 import streamlit as st
-import pickle
-from textblob import TextBlob
 import pandas as pd
 import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+from sklearn.feature_extraction.text import CountVectorizer
+from nltk.sentiment import SentimentIntensityAnalyzer
 import seaborn as sns
+import nltk
 
-# Load the pre-trained model and vectorizer
-@st.cache_resource
-def load_model():
-    with open("logistic_regression.pkl", "rb") as model_file, open("tfidf_vectorizer.pkl", "rb") as vectorizer_file:
-        model = pickle.load(model_file)
-        vectorizer = pickle.load(vectorizer_file)
-    return model, vectorizer
+# Ensure necessary nltk resources are downloaded
+nltk.download("vader_lexicon")
 
-model, vectorizer = load_model()
-
-# Title
-st.title("Product Review Sentiment Analysis")
-
-# Sidebar Info
-st.sidebar.title("About")
-st.sidebar.info(
+# Title and Description
+st.title("Amazon Product Review Sentiment Analysis")
+st.markdown(
     """
-    This app analyzes product reviews to determine their sentiment: 
-    **Positive**, **Neutral**, or **Negative**. 
-    It also visualizes sentiment trends by category!
+    This app performs sentiment analysis on Amazon product reviews, 
+    showcasing insights and visualizations based on textual data.
     """
 )
 
-# Input Review
-st.header("Analyze a Review")
-review = st.text_area("Enter your product review below:")
-
-# Analyze Sentiment
-if st.button("Analyze Sentiment"):
-    if review.strip():
-        # Preprocessing and prediction
-        review_vectorized = vectorizer.transform([review])
-        prediction = model.predict(review_vectorized)
-        sentiment = ["Negative", "Neutral", "Positive"][prediction[0]]
-
-        # Display Sentiment
-        st.subheader("Predicted Sentiment")
-        st.write(f"**{sentiment}**")
-
-        # Optional: Show TextBlob Sentiment Polarity
-        polarity = TextBlob(review).sentiment.polarity
-        st.subheader("TextBlob Sentiment Polarity")
-        st.write(f"Polarity Score: {polarity:.2f}")
-        st.info(
-            "Polarity ranges from -1 (most negative) to 1 (most positive). "
-            "A score close to 0 indicates neutrality."
-        )
-    else:
-        st.warning("Please enter a review to analyze.")
-
-# Sentiment by Category Visualization
-st.header("Sentiment Trends by Category")
-uploaded_file = st.file_uploader(
-    "Upload a dataset to visualize sentiment trends (CSV with 'categories' and 'reviews.text' columns):",
-    type=["csv"],
-)
+# File Uploader
+uploaded_file = st.file_uploader("Upload a CSV file containing product reviews", type=["csv"])
 
 if uploaded_file:
-    # Load uploaded dataset
-    data = pd.read_csv(uploaded_file)
+    # Load dataset
+    try:
+        df = pd.read_csv(uploaded_file)
+        st.write("### Dataset Preview")
+        st.write(df.head())
 
-    # Clean up categories
-    if "categories" in data.columns and "reviews.text" in data.columns:
-        # Preprocessing for category-based sentiment
-        data["primary_category"] = data["categories"].str.split(",").str[0]
-        data["cleaned_text"] = data["reviews.text"].fillna("").str.lower()
-        data["sentiment_label"] = data["cleaned_text"].apply(
-            lambda x: ["Negative", "Neutral", "Positive"][
-                model.predict(vectorizer.transform([x]))[0]
-            ]
-        )
-        data["sentiment_score"] = data["sentiment_label"].map(
-            {"Positive": 1, "Neutral": 0, "Negative": -1}
-        )
+        # Dropdown to select review column
+        text_column = st.selectbox("Select the review text column:", df.columns)
 
-        # Average sentiment by category
-        avg_sentiment = (
-            data.groupby("primary_category")["sentiment_score"].mean().sort_values()
-        )
+        # Sentiment Analysis
+        st.subheader("Sentiment Analysis")
+        sia = SentimentIntensityAnalyzer()
 
-        # Plotting
-        st.subheader("Average Sentiment Score by Product Category")
-        fig, ax = plt.subplots(figsize=(10, 8))
-        avg_sentiment.plot(kind="barh", color="skyblue", ax=ax)
-        ax.set_xlabel("Average Sentiment Score")
-        ax.set_ylabel("Product Category")
-        ax.set_title("Average Sentiment Score by Product Category")
+        def analyze_sentiment(text):
+            scores = sia.polarity_scores(text)
+            if scores['compound'] > 0.05:
+                return "Positive"
+            elif scores['compound'] < -0.05:
+                return "Negative"
+            else:
+                return "Neutral"
+
+        df["Sentiment"] = df[text_column].apply(analyze_sentiment)
+        sentiment_counts = df["Sentiment"].value_counts()
+        st.write(sentiment_counts)
+
+        # Sentiment Distribution
+        st.subheader("Sentiment Distribution")
+        fig, ax = plt.subplots()
+        sns.barplot(x=sentiment_counts.index, y=sentiment_counts.values, ax=ax, palette="viridis")
+        ax.set_title("Sentiment Distribution")
+        ax.set_xlabel("Sentiment")
+        ax.set_ylabel("Counts")
         st.pyplot(fig)
 
-        # Data preview
-        if st.checkbox("Show processed data"):
-            st.write(data[["primary_category", "cleaned_text", "sentiment_label"]].head())
-    else:
-        st.error("Uploaded file must contain 'categories' and 'reviews.text' columns.")
+        # Word Cloud
+        st.subheader("Word Cloud for Reviews")
+        all_text = " ".join(df[text_column].dropna())
+        wordcloud = WordCloud(width=800, height=400, background_color="white").generate(all_text)
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.imshow(wordcloud, interpolation="bilinear")
+        ax.axis("off")
+        st.pyplot(fig)
+
+        # Frequent Words
+        st.subheader("Top Frequent Words")
+        vectorizer = CountVectorizer(stop_words="english", max_features=10)
+        word_counts = vectorizer.fit_transform(df[text_column].dropna())
+        word_freq = dict(zip(vectorizer.get_feature_names_out(), word_counts.toarray().sum(axis=0)))
+        sorted_word_freq = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
+        frequent_words = pd.DataFrame(sorted_word_freq, columns=["Word", "Frequency"])
+        st.write(frequent_words)
+
+    except Exception as e:
+        st.error(f"Error processing file: {e}")
+
+else:
+    st.info("Awaiting file upload. Please upload a CSV file to proceed.")
+
